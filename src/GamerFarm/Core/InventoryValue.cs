@@ -524,6 +524,29 @@ public sealed partial class InventoryValue(Bot bot) {
 	/// <summary>About how many market requests the prices still being priced will take.</summary>
 	public int RequestsLeft => Pricing == 0 ? 0 : PriceBook.RequestsFor(Waiting());
 
+	/// <summary>
+	/// 2.0.3: how many of each of <paramref name="names"/> (market names) it holds in one inventory, from the last recount -
+	/// only those held. Empty when that inventory wasn't read, or is one you've told it to skip. Steam's own items (cards,
+	/// backgrounds, gems) are all in inventory 753, whatever game they belong to. <see cref="ByGame"/> only totals an
+	/// inventory, which cannot say which of a set's cards are held - and that is what a rule that judges a trade by the set
+	/// it completes needs. Only the names asked for are copied, never the whole inventory.
+	/// </summary>
+	public IReadOnlyDictionary<string, int> HeldCounts(uint app, IEnumerable<string> names) {
+		Dictionary<string, int> held = new(StringComparer.Ordinal);
+
+		lock (_tallyGate) {
+			if (_tally.TryGetValue(app, out TallyGame? game)) {
+				foreach (string name in names) {
+					if (game.Counted.TryGetValue(name, out (int Count, decimal Price) item) && (item.Count > 0)) {
+						held[name] = item.Count;
+					}
+				}
+			}
+		}
+
+		return held;
+	}
+
 	/// <summary>The currency the running total is in. 0 until the first recount.</summary>
 	private int _tallyCurrency;
 

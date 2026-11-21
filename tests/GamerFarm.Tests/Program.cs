@@ -33781,6 +33781,12 @@ static class SetFinderChecks {
 			Check("set finder: the cheapest first", known.Select(static k => k.UsdCents).SequenceEqual(known.Select(static k => k.UsdCents).Order()));
 			Check("set finder: a card not seen for two days and the set isn't known any more",
 				sf.Known(t0.AddHours(49)).Count == 0);
+			Check("set finder: an add-on's look at one set (2.0.3) - its name and cards while the prices are old (a card nobody sells counts too: the set's size is still right), never a set it couldn't read whole",
+				(sf.SetOf(100, t0.AddHours(49)) is { Game: "Cheap" } one) && (one.Cards.Count == 5)
+				&& one.Cards.SequenceEqual(known.Single(static k => k.App == 100).Cards)
+				&& (sf.SetOf(400, t0.AddMinutes(10)) is { Game: "Unsold" } unsold) && (unsold.Cards.Count == 5)
+				&& (sf.SetOf(300, t0.AddMinutes(10)) is null) && (sf.SetOf(100, t0.AddDays(31)) is null),
+				$"{sf.SetOf(100, t0.AddHours(49))?.Cards.Count} 400:{sf.SetOf(400, t0.AddMinutes(10))?.Cards.Count} 300:{sf.SetOf(300, t0.AddMinutes(10)) is null} 31d:{sf.SetOf(100, t0.AddDays(31)) is null}");
 			string kept = Path.Combine(root, "config", "state", "kept.json");
 			var reread = new GamerFarm.Core.SetFinder(kept, small.Get);
 			for (int i = 0; i < 6; i++) {
@@ -40534,6 +40540,108 @@ static class AddonTradeChecks {
 				&& handed.Giving is System.Collections.ObjectModel.ReadOnlyCollection<GamerFarm.Plugins.PluginTradeItem>
 				&& handed.Giving[0] is { AssetId: 1, Kind: GamerFarm.Plugins.PluginTradeItemKind.Card, Tradable: true, MarketHashName: "440-Scout", GameAppId: 440, AppId: 753, ContextId: "6" }
 				&& handed.Receiving[0] is { Kind: GamerFarm.Plugins.PluginTradeItemKind.Gems, Amount: 500 });
+
+			// The value a judge needs: Steam's gem type, the account's set size and wallet.
+			GamerFarm.Core.TradeOffers.Item gooCard = Card(190) with { GooType = 7, GooBorder = 1 };
+			GamerFarm.Plugins.PluginTradeOffer gooHanded = GamerFarm.Modules.Trading.ForAddons("main",
+				Offer(190, [gooCard], [Gems(2, 500)]), DateTime.UtcNow);
+			Check("plugin API: Steam's gem value type and border colour reach a trade judge with the item",
+				gooHanded.Giving[0] is { GooType: 7, GooBorder: 1 }, $"{gooHanded.Giving[0]}");
+
+			using System.Text.Json.JsonDocument gooDoc = System.Text.Json.JsonDocument.Parse(
+				"""{"owner_actions":[{"link":"javascript:GetGooValue('6','123','440','7','1')"}]}""");
+			Check("plugin API: a GooValue owner action is read from Steam's item description",
+				GamerFarm.Core.Spare.GooOf(gooDoc.RootElement) == (7, 1), $"{GamerFarm.Core.Spare.GooOf(gooDoc.RootElement)}");
+
+			var apiHost = new GamerFarm.Plugins.Host(mgr, "api-values");
+			Check("plugin API: an item without a GooValue type has no gem value to ask Steam for",
+				await apiHost.GemValueAsync(new GamerFarm.Plugins.PluginTradeItem(753, "6", 1, 1, 1, 1, "Scout", "440-Scout",
+					"Trading Card", GamerFarm.Plugins.PluginTradeItemKind.Card, true, true, 440, true), CancellationToken.None) is null);
+
+			GamerFarm.Plugins.PluginCardSet shape = new(440, "Team Fortress 2", 6, 2);
+			Check("plugin API: a card set gives its game, size and how many cards the account holds",
+				shape is { AppId: 440, Game: "Team Fortress 2", SetSize: 6, Owned: 2 }, $"{shape}");
+
+			// 2.0.3: a plugin built for 2.0.2 or before still finds PluginTradeItem's 14-value constructor and Deconstruct.
+			Type gemTradeItem = typeof(GamerFarm.Plugins.PluginTradeItem);
+			Check("plugin API: PluginTradeItem keeps the constructor and Deconstruct of 2.0.2 - the gem type and border are properties",
+				gemTradeItem.GetConstructors().Select(static c => c.GetParameters().Length).SequenceEqual([14])
+				&& gemTradeItem.GetMethods().Where(static m => m.Name == "Deconstruct").Select(static m => m.GetParameters().Length).SequenceEqual([14])
+				&& (gemTradeItem.GetProperty("GooType")?.SetMethod?.ReturnParameter.GetRequiredCustomModifiers().Contains(typeof(System.Runtime.CompilerServices.IsExternalInit)) == true),
+				string.Join(",", gemTradeItem.GetConstructors().Select(static c => c.GetParameters().Length)));
+
+			// 2.0.3: gem values a judge gets without an ask - gems, sacks, a value already kept - and none for what can't be one.
+			GamerFarm.Plugins.PluginTradeItem GemItem(GamerFarm.Plugins.PluginTradeItemKind kind, uint game, int gooType, uint app = 753) =>
+				new(app, "6", 1, 1, 1, 1, "x", $"{game}-x", "", kind, true, true, game, true) { GooType = gooType };
+			GamerFarm.Core.SteamGems.Remember(new GamerFarm.Core.SpareItem(0, 99001, GamerFarm.Core.SpareKind.Background, "", "", true, true, GooType: 3), 15);
+			GamerFarm.Core.SteamGems.Remember(new GamerFarm.Core.SpareItem(0, 99002, GamerFarm.Core.SpareKind.Background, "", "", true, true, GooType: 3), 0);
+			Check("plugin API: gems are 1 each and a sack 1000, with no ask",
+				(await apiHost.GemValueAsync(GemItem(GamerFarm.Plugins.PluginTradeItemKind.Gems, 0, 0)) == 1)
+				&& (await apiHost.GemValueAsync(GemItem(GamerFarm.Plugins.PluginTradeItemKind.GemSack, 0, 0)) == 1000));
+			Check("plugin API: a gem value the app already keeps is answered from it; one Steam said is 0 is null and never asked again",
+				(await apiHost.GemValueAsync(GemItem(GamerFarm.Plugins.PluginTradeItemKind.Background, 99001, 3)) == 15)
+				&& (await apiHost.GemValueAsync(GemItem(GamerFarm.Plugins.PluginTradeItemKind.Background, 99002, 3)) is null));
+			Check("plugin API: a game's own item (not appID 753) has no gem value, whatever it says",
+				await apiHost.GemValueAsync(GemItem(GamerFarm.Plugins.PluginTradeItemKind.Other, 99001, 3, app: 730)) is null);
+			Check("plugin API: with no account online, an unknown gem value is null - nothing is asked",
+				await apiHost.GemValueAsync(GemItem(GamerFarm.Plugins.PluginTradeItemKind.Background, 99003, 3)) is null);
+
+			// 2.0.3: the account a gem-value ask goes out on - a robot, online and signed in; never a human-mode one.
+			const BindingFlags GemInst = BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance;
+			GamerFarm.Core.Bot GemBot(string name, bool human, bool online) {
+				var b = new GamerFarm.Core.Bot(name, new GamerFarm.Config.BotConfig { LegitMode = human });
+				bots.Add(b);
+				if (online) {
+					typeof(GamerFarm.Core.Bot).GetProperty("State")!.SetValue(b, GamerFarm.Core.BotState.Online);
+					typeof(GamerFarm.Core.WebSession).GetProperty("Ready")!.SetValue(typeof(GamerFarm.Core.Bot).GetProperty("Web", GemInst)!.GetValue(b), true);
+				}
+				return b;
+			}
+			GamerFarm.Core.Bot gemHuman = GemBot("gem-human", human: true, online: true);
+			GamerFarm.Core.Bot gemRobotOff = GemBot("gem-robot-off", human: false, online: false);
+			GamerFarm.Core.Bot gemRobot = GemBot("gem-robot", human: false, online: true);
+			Check("plugin API: a gem-value ask never goes out on a human-mode account - with only that one online, none is made",
+				GamerFarm.Plugins.Host.GemAsker([gemHuman, gemRobotOff]) is null);
+			Check("plugin API: a gem-value ask goes out on an online robot account, even with a human-mode one listed first",
+				GamerFarm.Plugins.Host.GemAsker([gemHuman, gemRobotOff, gemRobot]) == gemRobot);
+
+			// 2.0.3: the wallet, as the market's own price writes its currency.
+			var gemAccountView = typeof(GamerFarm.Plugins.Host).GetNestedType("AccountView", BindingFlags.NonPublic)!;
+			GamerFarm.Plugins.IPluginAccount GemView(GamerFarm.Core.Bot b) => (GamerFarm.Plugins.IPluginAccount) Activator.CreateInstance(gemAccountView, b)!;
+			bool gemNoWallet = GemView(gemRobot) is { WalletCurrency: "", WalletCents: -1 };
+			typeof(GamerFarm.Core.Bot).GetProperty("WalletCurrency")!.SetValue(gemRobot, SteamKit2.ECurrencyCode.EUR);
+			typeof(GamerFarm.Core.Bot).GetProperty("WalletCents")!.SetValue(gemRobot, (long?) 1234);
+			Check("plugin API: the wallet - empty and -1 until Steam says, then its currency the way a market price says it, and its cents",
+				gemNoWallet && GemView(gemRobot) is { WalletCurrency: "EUR", WalletCents: 1234 }
+				&& (GamerFarm.Core.MarketQuotes.Code((int) SteamKit2.ECurrencyCode.EUR) == "EUR"), $"{GemView(gemRobot).WalletCurrency}");
+
+			// 2.0.3: a card set, end to end: the set the app read off the market, and the account's normal cards of it -
+			// gemHeld in inventory 753 under their market names, a foil not counted, another game's card not counted.
+			var gemSetMarket = new FakeSetMarket();
+			gemSetMarket.AddSet(99440, "Set Game", 6, 9, 10);
+			string gemSetFile = Path.Combine(GamerFarm.Config.ConfigStore.ConfigDir, "state", "setfinder.json");
+			var gemSetReader = new GamerFarm.Core.SetFinder(gemSetFile, gemSetMarket.Get);
+			for (int i = 0; i < 6; i++) {
+				await gemSetReader.BatchAsync(DateTime.UtcNow.AddMinutes(i - 10), CancellationToken.None);
+			}
+			typeof(GamerFarm.Core.SetFinder).GetField("_shared", BindingFlags.NonPublic | BindingFlags.Static)!.SetValue(null, null);   // read from its file, as after a restart
+			File.WriteAllText(Path.Combine(GamerFarm.Config.ConfigStore.ConfigDir, "state", "invvalue-gem-robot.json"), System.Text.Json.JsonSerializer.Serialize(new {
+				ReadAt = DateTime.UtcNow.Ticks,
+				Games = new object[] { new { App = 753, Game = "Steam", Items = new Dictionary<string, int[]> {
+					["99440-Card 1"] = [1, 5], ["99440-Card 2"] = [3, 5], ["99440-Card 3 (Foil)"] = [1, 5], ["99441-Card 4"] = [1, 5] } } }
+			}));
+			Type gemInvType = typeof(GamerFarm.Core.InventoryValue);
+			gemInvType.GetMethod("LoadSnapshot", GemInst)!.Invoke(gemRobot.Inventory, [TimeSpan.FromHours(6)]);
+			gemInvType.GetMethod("Recount", GemInst)!.Invoke(gemRobot.Inventory, []);
+			var gemHeld = gemRobot.Inventory.HeldCounts(753, ["99440-Card 1", "99440-Card 2", "99440-Card 3", "99440-Card 9"]);
+			Check("plugin API: what an account holds of some cards - from inventory 753, only the names asked about, foils apart",
+				(gemHeld.Count == 2) && (gemHeld["99440-Card 1"] == 1) && (gemHeld["99440-Card 2"] == 3) && (gemRobot.Inventory.HeldCounts(99440, ["99440-Card 1"]).Count == 0),
+				string.Join(",", gemHeld.Select(static h => $"{h.Key}={h.Value}")));
+			var gemCardSet = GemView(gemRobot).CardSet(99440);
+			Check("plugin API: CardSet - the set's game and size from what the app read, and the 2 different normal cards this account holds",
+				gemCardSet is { AppId: 99440, Game: "Set Game", SetSize: 6, Owned: 2 }, $"{gemCardSet}");
+			Check("plugin API: CardSet is null for a game whose set the app hasn't read, and for no game",
+				(GemView(gemRobot).CardSet(99441) is null) && (GemView(gemRobot).CardSet(0) is null));
 
 			// ── the judges together (PluginHost) ──
 			async Task<GamerFarm.Plugins.PluginHost.Judged> Judge() => await GamerFarm.Plugins.PluginHost.JudgeTradeAsync(() => handed, CancellationToken.None);

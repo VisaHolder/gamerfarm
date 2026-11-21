@@ -782,6 +782,20 @@ public sealed class SetFinder {
 	public static string Named(uint app, string stored) =>
 		(stored.Length > 0) && (stored != "app " + app.ToString(System.Globalization.CultureInfo.InvariantCulture)) ? stored : GameNames.Of(app);
 
+	/// <summary>
+	/// 2.0.3: one game's set for add-ons - its name and every card's market name - when its size and all its cards are
+	/// known; null otherwise. Unlike <see cref="Known"/> the prices needn't be fresh (only which cards there are), and only
+	/// this one game is looked at, not every set built.
+	/// </summary>
+	public (string Game, IReadOnlyList<string> Cards)? SetOf(uint app, DateTime now) {
+		lock (_gate) {
+			return Load().Games.TryGetValue(app, out Game? g) && (g.Size >= MinSetSize) && (g.Cards.Count == g.Size)
+				&& (now - new DateTime(g.SizeAt, DateTimeKind.Utc) < SizeLife)
+				? (Named(app, g.Name), [.. g.Cards.Keys.Order(StringComparer.Ordinal)])
+				: null;
+		}
+	}
+
 	/// <summary>Every set known whole now, the cheapest first (US cents).</summary>
 	public IReadOnlyList<KnownSet> Known(DateTime now) {
 		lock (_gate) {

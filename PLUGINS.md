@@ -214,7 +214,7 @@ Everything your plugin gets is on `host`, the `IPluginHost` passed to `OnLoadAsy
 
 | On `host` | What it's for |
 |---|---|
-| `Accounts` · `Account("farm1")` | Every account, or one by the name you gave it in gamer.farm (`null` if there's no such account). Each has `Name`, `SteamId`, `IsOnline`, `Persona`, `Status`, `Playing`, `CardsRemaining` (-1 until it has looked), `Library` and `InventoryByGame`. |
+| `Accounts` · `Account("farm1")` | Every account, or one by the name you gave it in gamer.farm (`null` if there's no such account). Each has `Name`, `SteamId`, `IsOnline`, `Persona`, `Status`, `Playing`, `CardsRemaining` (-1 until it has looked), `Library` and `InventoryByGame`. Since 2.0.3 it also has `WalletCurrency` and `WalletCents` (the wallet Steam last pushed, `"EUR"` and euro cents; `""` and -1 until then) and `CardSet(appId)`: the game's set size and how many different cards of it the account holds (foils not counted), or `null` when gamer.farm hasn't read that set. |
 | `Log("text")` | Write a line to the log. It shows up tagged `[plugin]`. |
 | `RunCommandAsync("pause farm1")` | Run a command and get back the text it would have printed. |
 | `AddCommand(verb, usage, help, handler)` | Add a command. It works in the console, the dashboard and Steam chat, and is listed by `plugins` and on the dashboard's Plugins page (not by `help`). |
@@ -229,6 +229,7 @@ Everything your plugin gets is on `host`, the `IPluginHost` passed to `OnLoadAsy
 | `Notify("text", "farm1")` | Send a line out on Telegram, Discord and the tray, the way the app's own news goes, when *Send add-on messages* is on. It also goes in the log. |
 | `AddTradeJudge((offer, ct) => ...)` | Be asked about incoming trade offers gamer.farm leaves undecided, and answer Accept, Decline or Leave. See [Answering trade offers](#answering-trade-offers). |
 | `KnownMarketPrice(appId, name)` · `MarketPriceAsync(appId, name)` | A Steam market price: the lowest listing, in the app's market currency, and when it was read. `KnownMarketPrice` only gives what gamer.farm already holds. `MarketPriceAsync` asks the market when the held one is old, through gamer.farm's own spaced-out queue, at most 60 times an hour per plugin. |
+| `GemValueAsync(item)` | 2.0.3: how many gems ONE of a trade item turns into (gems are 1, a sack 1000; multiply by `Amount`). Its `GooType` and `GooBorder` travel with the item, and gamer.farm answers from the gem values it keeps (a month, shared by everything) or asks Steam once, on a robot account; never on a human-mode one. `null` when it can't say: not one of Steam's own items, no gem type, Steam didn't answer it lately, no robot account online, or no ask left (it shares the 60 an hour with `MarketPriceAsync`). A market price is not the same thing: a gem value follows the game, type and border, not what somebody lists it for. |
 
 | Event | When it fires |
 |---|---|
@@ -319,9 +320,19 @@ The `offer` your judge gets has the account's name, the offer's id, who sent it 
 was sent, the trade hold if Steam already said, and the items on both sides: `Giving` is what the account would hand
 over, `Receiving` what it would get. Each item has its ids, amount, name, market name, Steam's type line, a simple
 `Kind` (`Card`, `FoilCard`, `Background`, `Emoticon`, `BoosterPack`, `Gems`, `GemSack` or `Other`), whether Steam says it's
-`Tradable` and `Marketable`, and for Steam community items the game it belongs to (`GameAppId`). It's what gamer.farm
+`Tradable` and `Marketable`, for Steam community items the game it belongs to (`GameAppId`), and since 2.0.3 the gem type
+and border Steam's "turn into gems" action names (`GooType`, `GooBorder`; 0 when it has none). It's what gamer.farm
 already read from Steam; nothing extra is asked for your plugin. For prices, use
 `host.MarketPriceAsync(753, item.MarketHashName, token)` instead of asking the market yourself.
+
+Since 2.0.3 a judge that values what it is offered can ask for the rest: `await host.GemValueAsync(item, token)` for
+what one of an item turns into in gems, and, from `host.Account(offer.Account)`, `WalletCurrency`/`WalletCents` for the
+wallet that account pays with, and `CardSet(item.GameAppId)` for the set's size and how many different cards of it that
+account already holds. Card sets come from what gamer.farm has read of the market for itself and cost no Steam read. A
+`null` set or gem value means "not known", so leave the offer alone rather than guess.
+
+`GooType` and `GooBorder` are properties rather than part of `PluginTradeItem`'s constructor, so a plugin built for 2.0.2
+or before that makes or takes apart one keeps working. Set them with `with { GooType = 2 }` or an initializer.
 
 ### What gamer.farm does whatever your judge says
 

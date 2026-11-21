@@ -240,7 +240,10 @@ public sealed partial class Trading {
 			Array.AsReadOnly([.. offer.Giving.Select(ForAddons)]), Array.AsReadOnly([.. offer.Receiving.Select(ForAddons)]));
 
 	private static PluginTradeItem ForAddons(TradeOffers.Item i) =>
-		new(i.App, i.Context, i.AssetId, i.ClassId, i.InstanceId, i.Amount, i.Name, i.Hash, i.Type, KindOf(i.Kind), i.Tradable, i.Marketable, i.Game, i.Described);
+		new(i.App, i.Context, i.AssetId, i.ClassId, i.InstanceId, i.Amount, i.Name, i.Hash, i.Type, KindOf(i.Kind), i.Tradable, i.Marketable, i.Game, i.Described) {
+			GooType = i.GooType,
+			GooBorder = i.GooBorder
+		};
 
 	private static PluginTradeItemKind KindOf(SpareKind kind) => kind switch {
 		SpareKind.Card => PluginTradeItemKind.Card,

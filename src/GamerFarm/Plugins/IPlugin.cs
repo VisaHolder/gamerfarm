@@ -74,6 +74,26 @@ public interface IPluginAccount {
 
 	/// <summary>1.9.0: paused, switched off or signing off - the operator has it standing still, so nothing should start on it.</summary>
 	bool IsPaused { get; }
+
+	/// <summary>
+	/// 2.0.3: the currency its wallet is in ("EUR"), as Steam last pushed it; empty when it hasn't said yet. The market's own
+	/// currency (see <see cref="PluginMarketPrice.Currency"/>) is usually the same one, but not always, and a rule that
+	/// compares a wallet price with a market price needs to know which it is holding.
+	/// </summary>
+	string WalletCurrency => "";
+
+	/// <summary>2.0.3: what its wallet holds, in the currency's smallest unit (euro cents), as Steam last pushed it; -1 when it hasn't said.</summary>
+	long WalletCents => -1;
+
+	/// <summary>
+	/// 2.0.3: a game's card set, when the app knows every card of it - its size and how many of its cards this account
+	/// holds. Null when the app hasn't read that game's set from the market (it reads the cheapest sets, not every game's),
+	/// or when the game has no set.
+	///
+	/// This is what a "complete the set" rule needs: an inventory says which cards are held, never how many different ones
+	/// the set has. Known sets are shared by every account and kept for a month, so this costs no Steam read.
+	/// </summary>
+	PluginCardSet? CardSet(uint appId) => null;
 }
 
 /// <summary>1.9.0: what came of <see cref="IPluginHost.PostProfileCommentAsync"/>.</summary>
@@ -168,6 +188,17 @@ public readonly record struct PluginGame(uint AppId, string Name, int MinutesPla
 /// <summary>What one game's items are worth.</summary>
 public readonly record struct PluginGameValue(uint AppId, string Game, int Items, decimal Value);
 
+/// <summary>
+/// 2.0.3: one game's card set, as the app knows it. A rule that judges a trade by how much of a set it completes needs the
+/// size Steam gave the set, which no inventory listing carries.
+/// </summary>
+/// <param name="AppId">The game the set belongs to.</param>
+/// <param name="Game">Its name, as Steam shows it.</param>
+/// <param name="SetSize">How many different cards the set holds (5 or more).</param>
+/// <param name="Owned">How many of those cards the account holds right now, foil cards left out. 0 when the account's
+/// inventory hasn't been read, so it is a floor rather than a guess.</param>
+public readonly record struct PluginCardSet(uint AppId, string Game, int SetSize, int Owned);
+
 /// <summary>1.9.1: what kind of Steam item a <see cref="PluginTradeItem"/> is - for Steam's own community items (appID 753); Other for everything else.</summary>
 public enum PluginTradeItemKind { Other, Card, FoilCard, Background, Emoticon, BoosterPack, Gems, GemSack }
 
@@ -201,7 +232,21 @@ public sealed record PluginTradeItem(
 	bool Marketable,
 	uint GameAppId,
 	bool Described
-);
+) {
+	// 2.0.3: the two below are properties, not more of the list above. A plugin built for 2.0.2 or before that makes or takes
+	// apart one of these calls the 14-value constructor and Deconstruct by their exact shape; adding to the list would have
+	// changed both, and such a plugin would stop with MissingMethodException the first time it touched one.
+
+	/// <summary>
+	/// 2.0.3: Steam's gem type for the item (its GooValue type), from the "turn into gems" action its description carries; 0
+	/// when the description has none. Together with <see cref="GooBorder"/> it is what <see cref="IPluginHost.GemValueAsync"/>
+	/// asks about.
+	/// </summary>
+	public int GooType { get; init; }
+
+	/// <summary>2.0.3: the border colour the gem value depends on - 1 for a foil card; 0 when Steam named none.</summary>
+	public int GooBorder { get; init; }
+}
 
 /// <summary>1.9.1: an incoming trade offer the app hasn't decided itself, handed to a trade judge (<see cref="IPluginHost.AddTradeJudge"/>).</summary>
 /// <param name="Account">The account it was sent to - its config name.</param>
@@ -460,6 +505,20 @@ public interface IPluginHost {
 	/// old); null when there's none at all. Can take a while when the queue is busy.
 	/// </summary>
 	Task<PluginMarketPrice?> MarketPriceAsync(uint appId, string marketHashName, CancellationToken ct = default);
+
+	/// <summary>
+	/// 2.0.3: the app's gem value for ONE of an item - what Steam's GooValue lookup says it turns into, as the app already
+	/// knows it or asks for it now. Gems are 1 each and a sack of gems 1000; multiply by <see cref="PluginTradeItem.Amount"/>
+	/// for a stack. Null when the item is not one of Steam's own (appID 753) with a gem type, when Steam didn't answer that
+	/// lookup lately, when no account the app may use for it is online (never a human-mode one), or when this add-on has
+	/// used up its share of asks this hour (shared with <see cref="MarketPriceAsync"/>).
+	///
+	/// Gem values follow the game, the item's type and its border, not its price: two cards at the same price can turn into
+	/// very different amounts, and no market listing says so. That is why this is here rather than worked out from
+	/// <see cref="MarketPriceAsync"/>. Values are kept for a month and shared with the app and every other add-on, so
+	/// asking about one already read costs nothing.
+	/// </summary>
+	Task<int?> GemValueAsync(PluginTradeItem item, CancellationToken ct = default) => Task.FromResult<int?>(null);
 
 	/// <summary>An account finished signing in.</summary>
 	event Action<IPluginAccount>? AccountOnline;

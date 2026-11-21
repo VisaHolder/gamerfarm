@@ -490,6 +490,94 @@ internal sealed partial class Host(BotManager mgr, string owner) : IPluginHost {
 		return KnownMarketPrice(appId, marketHashName);
 	}
 
+	/// <summary>Gems in one sack of gems.</summary>
+	private const int GemsInASack = 1000;
+
+	/// <summary>
+	/// 2.0.3: one gem-value ask of Steam at a time, from every add-on together - so two judges asking about the same item at
+	/// once make one request, the second finding what the first learned.
+	/// </summary>
+	private static readonly SemaphoreSlim GemAsk = new(1, 1);
+
+	/// <summary>
+	/// 2.0.3: a gem value, from the cache the app and every add-on share, or from one ask of Steam's gem-value page. The type
+	/// and border come from the trade's own description, so this is the real value of that item, not a guess from its price.
+	/// The ask goes out on a robot account (no human mode) that is online; with only human-mode accounts online it isn't
+	/// made at all: an add-on's question is never a reason for one of those to do something it otherwise wouldn't.
+	/// </summary>
+	public async Task<int?> GemValueAsync(PluginTradeItem item, CancellationToken ct = default) {
+		if (item is null) {
+			return null;
+		}
+
+		// Gems are gems: a stack of them, and a sack of 1000, need no ask.
+		if ((item.AppId == 753) && (item.Kind == PluginTradeItemKind.Gems)) {
+			return 1;
+		}
+
+		if ((item.AppId == 753) && (item.Kind == PluginTradeItemKind.GemSack)) {
+			return GemsInASack;
+		}
+
+		// Only Steam's own items (inventory 753) turn into gems, through the game they belong to.
+		if ((item.AppId != 753) || (item.GooType <= 0) || (item.GooBorder < 0) || (item.GameAppId == 0)) {
+			return null;
+		}
+
+		SpareItem spare = new(0, item.GameAppId, KindOf(item.Kind), item.MarketHashName ?? "", item.Name ?? "", item.Tradable, item.Marketable,
+			GooType: item.GooType, GooBorder: item.GooBorder);
+
+		// Known (Steam says 0 for some items - known all the same, and never asked again): no ask.
+		if (SteamGems.KnownValue(spare) is int known) {
+			return known > 0 ? known : null;
+		}
+
+		await GemAsk.WaitAsync(ct).ConfigureAwait(false);
+
+		try {
+			// Learned while this one waited its turn.
+			if (SteamGems.KnownValue(spare) is int learned) {
+				return learned > 0 ? learned : null;
+			}
+
+			// Steam didn't answer this one lately: the app waits before asking again, and so does an add-on.
+			if (!SteamGems.Ask(spare, DateTime.UtcNow) || (GemAsker(mgr.All) is not { } bot) || !MayAskMarket()) {
+				return null;
+			}
+
+			int? value = await new LiveSpareSteam(bot).GemValueAsync(spare, ct).ConfigureAwait(false);
+
+			return value > 0 ? value : null;
+		} catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+			throw;
+		} catch (Exception e) {
+			GamerFarm.Log.Failed($"plugin {_owner}: a gem value", e);
+
+			return null;
+		} finally {
+			GemAsk.Release();
+		}
+	}
+
+	/// <summary>
+	/// 2.0.3: the account an add-on's gem-value ask goes out on: one that is online, signed in to the web, not stopping, and
+	/// not in human mode - or null when there is none. A human-mode account is never used for a request an add-on wants:
+	/// it only does what its own day does.
+	/// </summary>
+	internal static Bot? GemAsker(IEnumerable<Bot> bots) =>
+		bots.FirstOrDefault(static b => b.IsOnline && !b.Stopping && !b.Cfg.LegitMode && b.Web.Ready);
+
+	private static SpareKind KindOf(PluginTradeItemKind kind) => kind switch {
+		PluginTradeItemKind.Card => SpareKind.Card,
+		PluginTradeItemKind.FoilCard => SpareKind.FoilCard,
+		PluginTradeItemKind.Background => SpareKind.Background,
+		PluginTradeItemKind.Emoticon => SpareKind.Emoticon,
+		PluginTradeItemKind.BoosterPack => SpareKind.BoosterPack,
+		PluginTradeItemKind.Gems => SpareKind.Gems,
+		PluginTradeItemKind.GemSack => SpareKind.GemSack,
+		_ => SpareKind.Other
+	};
+
 	/// <summary>A market name worth asking about: something, not a page of text.</summary>
 	private static bool PriceName(string? name) => !string.IsNullOrWhiteSpace(name) && (name.Length <= 256) && !name.Any(char.IsControl);
 
@@ -643,5 +731,19 @@ internal sealed partial class Host(BotManager mgr, string owner) : IPluginHost {
 
 		public IReadOnlyList<PluginGameValue> InventoryByGame =>
 			[.. bot.Inventory.ByGame.Select(static v => new PluginGameValue(v.AppId, v.Game, v.Items, v.Value))];
+
+		// Written the way the market's own price says its currency (PluginMarketPrice.Currency), so the two compare as text.
+		public string WalletCurrency => MarketQuotes.Code((int) bot.WalletCurrency);
+		public long WalletCents => bot.WalletCents ?? -1;
+
+		public PluginCardSet? CardSet(uint appId) {
+			if ((appId == 0) || (SetFinder.Shared.SetOf(appId, DateTime.UtcNow) is not { } set)) {
+				return null;
+			}
+
+			// Cards are Steam's own items: held in inventory 753 under their market names ("440-Scout"), the same names the
+			// set is known by. A foil is "440-Scout (Foil)", so it is never counted as the normal card.
+			return new PluginCardSet(appId, set.Game, set.Cards.Count, bot.Inventory.HeldCounts(753, set.Cards).Count);
+		}
 	}
 }
