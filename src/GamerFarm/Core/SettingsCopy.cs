@@ -122,7 +122,7 @@ public static class SettingsCopy {
 		// SaleEvents
 		nameof(BotConfig.SaleEvents), nameof(BotConfig.SaleEventsHumanToo), nameof(BotConfig.SaleAwardsNominate), nameof(BotConfig.SaleAwardsVote),
 		nameof(BotConfig.ClaimEventItems), nameof(BotConfig.DiscoveryQueue), nameof(BotConfig.SaleQuests), nameof(BotConfig.SaleNextFest),
-		nameof(BotConfig.SaleNominatePick), nameof(BotConfig.SaleGapMinSeconds), nameof(BotConfig.SaleGapMaxSeconds),
+		nameof(BotConfig.SaleNominatePick), nameof(BotConfig.SaleNominateSuggestions), nameof(BotConfig.SaleGapMinSeconds), nameof(BotConfig.SaleGapMaxSeconds),
 		nameof(BotConfig.SaleHumanGapMinMinutes), nameof(BotConfig.SaleHumanGapMaxMinutes), nameof(BotConfig.SaleCheckHours),
 		// Points
 		nameof(BotConfig.PointsCheckEveryHours),

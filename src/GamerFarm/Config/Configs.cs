@@ -836,6 +836,9 @@ public sealed class BotConfig {
 	/// <summary>0 the game it played most, 1 any game it has played.</summary>
 	public int SaleNominatePick { get; set; }
 
+	/// <summary>When no played game fits a category, nominate one of Steam's suggested games instead.</summary>
+	public bool SaleNominateSuggestions { get; set; }
+
 	public int SaleGapMinSeconds { get; set; } = 5;
 	public int SaleGapMaxSeconds { get; set; } = 20;
 	public int SaleHumanGapMinMinutes { get; set; } = 5;

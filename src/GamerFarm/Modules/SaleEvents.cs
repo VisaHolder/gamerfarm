@@ -15,7 +15,8 @@ namespace GamerFarm.Modules;
 /// <list type="bullet">
 /// <item>nominating: GET ISteamAwardsService/Nominate with input_json {category_id, nominated_id, source} - source 6 is
 /// "from the games you played", what the page itself sends for a pick from that list. GetUserNominations says what's
-/// already nominated, GetNominationRecommendations {category_id} the games this account played that fit a category.</item>
+/// already nominated, GetNominationRecommendations {category_id} the games this account played that fit a category and
+/// the games Steam suggests for it (source 6 for the first, 7 for the second).</item>
 /// <item>voting: POST IStoreSalesService/SetVote with voteid, appid and sale_appid.</item>
 /// <item>the page's state lists the categories (voteid, start_time, end_time and the finalists in app_discounts),
 /// this account's votes, the sale's app id and the nomination badge's tasks. Up to 2025 that was
@@ -307,6 +308,27 @@ public static class SaleEventPages {
 		return played;
 	}
 
+	/// <summary>The games Steam suggests for a category, from the same GetNominationRecommendations answer.</summary>
+	public static List<uint> ParseSuggested(string? json) {
+		List<uint> suggested = [];
+
+		if (Response(json) is not { } body) {
+			return suggested;
+		}
+
+		using (body) {
+			if (body.RootElement.GetProperty("response").TryGetProperty("suggested_apps", out JsonElement list) && (list.ValueKind == JsonValueKind.Array)) {
+				foreach (JsonElement a in list.EnumerateArray()) {
+					if ((Int(a, "appid") is { } app) && (app > 0) && (app != SkipApp) && !suggested.Contains((uint) app)) {
+						suggested.Add((uint) app);
+					}
+				}
+			}
+		}
+
+		return suggested;
+	}
+
 	/// <summary>
 	/// When the event on a Steam sale page (Next Fest's) runs: the event in <c>data-partnereventstore</c> with its
 	/// rtime32_start_time and rtime32_end_time. Null when the page has no such event.
@@ -338,15 +360,23 @@ public static class SaleEventPages {
 	}
 
 	/// <summary>
-	/// The game to nominate: <paramref name="mode"/> 0 the one played most, 1 any of them - always one this account played,
-	/// and one not already nominated in another category while there's a choice.
+	/// The game to nominate: <paramref name="mode"/> 0 the one played most, 1 any of them - always one this account played
+	/// while it can, and one not already nominated in another category. <paramref name="suggested"/> is the fallback for a
+	/// category with no played game; Steam sends those from its suggestions with source 7 instead of 6.
 	/// </summary>
-	public static uint? PickNominee(IReadOnlyList<(uint App, int Minutes)> played, int mode, IReadOnlySet<uint> used, Random rng) {
+	public static uint? PickNominee(IReadOnlyList<(uint App, int Minutes)> played, int mode, IReadOnlySet<uint> used, Random rng, IReadOnlyList<uint>? suggested = null) {
 		List<(uint App, int Minutes)> fresh = [.. played.Where(p => !used.Contains(p.App))];
 		List<(uint App, int Minutes)> from = fresh.Count > 0 ? fresh : [.. played];
 
 		if (from.Count == 0) {
-			return null;
+			if (suggested is not { Count: > 0 }) {
+				return null;
+			}
+
+			List<uint> freshSuggestions = [.. suggested.Where(a => !used.Contains(a))];
+			List<uint> suggestions = freshSuggestions.Count > 0 ? freshSuggestions : [.. suggested];
+
+			return suggestions[rng.Next(suggestions.Count)];
 		}
 
 		return mode == 1 ? from[rng.Next(from.Count)].App : from.OrderByDescending(static p => p.Minutes).ThenBy(static p => p.App).First().App;
@@ -427,6 +457,9 @@ internal sealed class BotSaleWeb(Bot bot) : ISaleWeb {
 public sealed class SaleEventsEngine(ISaleWeb web, Func<BotConfig> cfg, Func<uint, int> minutesOn, Random rng) {
 	/// <summary>Nominate source: picked from "games you played" on the nominations page.</summary>
 	public const int SourcePlayed = 6;
+
+	/// <summary>Nominate source: picked from the games Steam suggests, the same source the store page sends for them.</summary>
+	public const int SourceSuggested = 7;
 
 	public SaleEventPages.Awards? Nominations { get; private set; }
 	public SaleEventPages.Awards? Voting { get; private set; }
@@ -527,19 +560,23 @@ public sealed class SaleEventsEngine(ISaleWeb web, Func<BotConfig> cfg, Func<uin
 
 	private async Task<Said?> NominateAsync(int category, CancellationToken ct) {
 		string ask = JsonSerializer.Serialize(new { category_id = category });
-		List<(uint App, int Minutes)> played = SaleEventPages.ParsePlayed(await web.ApiGetAsync("ISteamAwardsService", "GetNominationRecommendations",
-			new Dictionary<string, string> { ["input_json"] = ask }, ct).ConfigureAwait(false));
+		string? recs = await web.ApiGetAsync("ISteamAwardsService", "GetNominationRecommendations",
+			new Dictionary<string, string> { ["input_json"] = ask }, ct).ConfigureAwait(false);
+		List<(uint App, int Minutes)> played = SaleEventPages.ParsePlayed(recs);
+		List<uint>? suggested = cfg().SaleNominateSuggestions ? SaleEventPages.ParseSuggested(recs) : null;
 
 		HashSet<uint> used = Nominated == null ? [] : [.. Nominated.Values];
 
-		if (SaleEventPages.PickNominee(played, cfg().SaleNominatePick, used, rng) is not { } app) {
-			// Nothing it played fits this category: left empty rather than a game it never touched.
+		if (SaleEventPages.PickNominee(played, cfg().SaleNominatePick, used, rng, suggested) is not { } app) {
+			// Nothing it played (or suggested, when allowed) fits this category: leave it empty rather than guess.
 			_refused.Add("n" + category);
 
 			return null;
 		}
 
-		string body = JsonSerializer.Serialize(new { category_id = category, nominated_id = app, source = SourcePlayed });
+		// PickNominee only falls through to suggestions when the played list is empty - that is what the source says.
+		int source = played.Count > 0 ? SourcePlayed : SourceSuggested;
+		string body = JsonSerializer.Serialize(new { category_id = category, nominated_id = app, source });
 		Dictionary<int, uint>? after = SaleEventPages.ParseNominations(await web.ApiGetAsync("ISteamAwardsService", "Nominate",
 			new Dictionary<string, string> { ["input_json"] = body }, ct).ConfigureAwait(false));
 

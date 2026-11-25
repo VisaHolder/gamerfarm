@@ -20907,6 +20907,19 @@ if (GamerFarm.Core.SelfUpdate.Supported) {
 	Check("sale events: it tries not to nominate the same game twice", GamerFarm.Modules.SaleEventPages.PickNominee(playedList, 0, new HashSet<uint> { 367520 }, pickRng) == 1245620);
 	HashSet<uint> anyPicks = [.. Enumerable.Range(0, 200).Select(_ => GamerFarm.Modules.SaleEventPages.PickNominee(playedList, 1, new HashSet<uint>(), pickRng)!.Value)];
 	Check("sale events: \"any game it played\" picks among the played games only (not suggestions, not the placeholder)", anyPicks.SetEquals([1245620u, 367520u, 105600u]), string.Join(",", anyPicks));
+
+	// Opt-in suggestions: Steam sends them in the same answer; played games still come first and the placeholder never does.
+	var suggestedList = GamerFarm.Modules.SaleEventPages.ParseSuggested(Sample("GetNominationRecommendations.json"));
+	Check("sale events: Steam's suggested apps are read from the same answer, de-duplicated and never the skip placeholder",
+		suggestedList.SequenceEqual([1086940u, 2358720u])
+		&& GamerFarm.Modules.SaleEventPages.ParseSuggested(Sample("GetNominationRecommendations-none.json")).SequenceEqual([1086940u])
+		&& GamerFarm.Modules.SaleEventPages.ParseSuggested("""{"response":{"suggested_apps":[{"appid":1086940},{"appid":1086940},{"appid":2215130}]}}""").SequenceEqual([1086940u])
+		&& GamerFarm.Modules.SaleEventPages.ParseSuggested("<html>").Count == 0);
+	Check("sale events: a suggested game is picked only when none was played, and one already used isn't picked again",
+		GamerFarm.Modules.SaleEventPages.PickNominee([], 0, new HashSet<uint>(), pickRng) == null
+		&& GamerFarm.Modules.SaleEventPages.PickNominee([], 0, new HashSet<uint>(), pickRng, suggestedList) is 1086940 or 2358720
+		&& GamerFarm.Modules.SaleEventPages.PickNominee([], 0, new HashSet<uint> { 1086940 }, pickRng, suggestedList) == 2358720
+		&& GamerFarm.Modules.SaleEventPages.PickNominee(playedList, 0, new HashSet<uint>(), pickRng, suggestedList) == 367520);
 	Check("sale events: nothing played that fits → no nominee", GamerFarm.Modules.SaleEventPages.PickNominee(GamerFarm.Modules.SaleEventPages.ParsePlayed(Sample("GetNominationRecommendations-none.json")), 0, new HashSet<uint>(), pickRng) == null);
 	Check("sale events: votes for the finalist it played most", GamerFarm.Modules.SaleEventPages.PickVote([570, 730, 440], a => a == 440 ? 600 : a == 730 ? 30 : 0, pickRng) == 440);
 	HashSet<uint> randomVotes = [.. Enumerable.Range(0, 200).Select(_ => GamerFarm.Modules.SaleEventPages.PickVote([570, 730, 440], _ => 0, pickRng)!.Value)];
@@ -20948,6 +20961,18 @@ if (GamerFarm.Core.SelfUpdate.Supported) {
 	Check("sale events: every nomination is a game the account played, sent as \"from the games you played\" (source 6)",
 		nomWeb.Nominates.All(n => (n.App is 1245620 or 367520 or 105600) && (n.Source == 6)));
 	Check("sale events: the first goes to the most played game it hadn't used yet", nomWeb.Nominates[0].App == 367520);
+
+	GamerFarm.Config.BotConfig suggestCfg = new() { SaleNominateSuggestions = true };
+	var (suggestWeb, suggestEngine) = await Look(Web(nomPage, overPage, festPage, recs: Sample("GetNominationRecommendations-none.json")), suggestCfg, nomNow);
+	await Steps(suggestEngine);
+	Check("sale events: opt-in suggestions fill categories with no played game, sent with source 7",
+		(suggestWeb.Nominates.Count == 11) && suggestWeb.Nominates.All(n => (n.App == 1086940) && (n.Source == 7))
+		&& !suggestEngine.AnythingLeft, $"{suggestWeb.Nominates.Count}, sources {string.Join(",", suggestWeb.Nominates.Select(static n => n.Source).Distinct())}");
+	var (bothWeb, bothEngine) = await Look(Web(nomPage, overPage, festPage), suggestCfg, nomNow);
+	await Steps(bothEngine);
+	Check("sale events: with suggestions on, played games still win and keep source 6",
+		(bothWeb.Nominates.Count == 11) && bothWeb.Nominates.All(n => (n.App is 1245620 or 367520 or 105600) && (n.Source == 6)),
+		$"{bothWeb.Nominates.Count}, sources {string.Join(",", bothWeb.Nominates.Select(static n => n.Source).Distinct())}");
 
 	var (oneWeb, oneEngine) = await Look(Web(nomPage, overPage, festPage), robot, nomNow);
 	List<GamerFarm.Core.Said> humanDid = await GamerFarm.Modules.SaleEvents.DoStepsAsync(oneEngine, true, GamerFarm.Modules.SaleEvents.Gap(robot, true),
