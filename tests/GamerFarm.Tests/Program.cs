@@ -20866,6 +20866,16 @@ if (GamerFarm.Core.SelfUpdate.Supported) {
 		vote is { Categories.Count: 11, Votes.Count: 2, SaleAppId: 4147080 } && vote.Categories[0].Finalists.Count == 5 && vote.Votes[131] == 730);
 	Check("sale events: a page without the awards config (signed out, not running) reads as nothing", GamerFarm.Modules.SaleEventPages.ParseAwards(nonePage) == null
 		&& GamerFarm.Modules.SaleEventPages.ParseAwards(null) == null && GamerFarm.Modules.SaleEventPages.ParseAwards("<div data-steam_awards_config=\"not json\"></div>") == null);
+	string modernPage = Sample("steamawards-nominations-2026.html");
+	GamerFarm.Modules.SaleEventPages.Awards? modern = GamerFarm.Modules.SaleEventPages.ParseAwards(modernPage);
+	Check("sale events: the 2026 page's React Query cache is read - categories, sale app id, nominations, badge tasks",
+		modern is { Categories.Count: 3, Votes.Count: 1, SaleAppId: 5350740, Quests.Count: 4 } && modern.Categories[0].Id == 150
+		&& modern.Votes[150] == 1245620 && modern.Quests.Count(static q => q) == 1,
+		$"{modern?.Categories.Count} categories, {modern?.Votes.Count} votes, sale {modern?.SaleAppId}, {modern?.Quests.Count} quests");
+	Check("sale events: nominations are open on the 2026 page too (voting starts 17 December)",
+		GamerFarm.Modules.SaleEventPages.NominationsOpen(modern, nomNow) && !GamerFarm.Modules.SaleEventPages.VotingOpen(modern, nomNow));
+	Check("sale events: an ssr-data script without award state reads as nothing",
+		GamerFarm.Modules.SaleEventPages.ParseAwards("<script id=\"valve-ssr-data\">{}</script>") == null);
 	Check("sale events: nominations are open in late November, before voting starts", GamerFarm.Modules.SaleEventPages.NominationsOpen(nom, nomNow)
 		&& !GamerFarm.Modules.SaleEventPages.VotingOpen(nom, nomNow));
 	Check("sale events: nominations aren't open months ahead, or once voting has started", !GamerFarm.Modules.SaleEventPages.NominationsOpen(nom, octNow.AddMonths(-3))
@@ -20910,6 +20920,11 @@ if (GamerFarm.Core.SelfUpdate.Supported) {
 	}
 	Task<List<GamerFarm.Core.Said>> Steps(GamerFarm.Modules.SaleEventsEngine e) =>
 		GamerFarm.Modules.SaleEvents.DoStepsAsync(e, false, (0, 0), (_, _) => Task.CompletedTask, () => true, CancellationToken.None);
+
+	var (modernWeb, modernEngine) = await Look(Web(modernPage, overPage, festPage), robot, nomNow);
+	List<GamerFarm.Core.Said> modernDid = await Steps(modernEngine);
+	Check("sale events: with the 2026 page the robot nominates in every category the page lists",
+		(modernWeb.Nominates.Count == 3) && (modernDid.Count == 3) && !modernEngine.AnythingLeft, $"{modernWeb.Nominates.Count} nominations");
 
 	var (offWeb, offEngine) = await Look(Web(overPage, overPage, festPage), robot, octNow);
 	List<GamerFarm.Core.Said> offDid = await Steps(offEngine);

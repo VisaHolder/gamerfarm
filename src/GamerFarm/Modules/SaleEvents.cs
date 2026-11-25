@@ -17,9 +17,10 @@ namespace GamerFarm.Modules;
 /// "from the games you played", what the page itself sends for a pick from that list. GetUserNominations says what's
 /// already nominated, GetNominationRecommendations {category_id} the games this account played that fit a category.</item>
 /// <item>voting: POST IStoreSalesService/SetVote with voteid, appid and sale_appid.</item>
-/// <item>both pages carry their state in <c>#application_config</c>'s <c>data-steam_awards_config</c>: the categories
-/// (<c>definitions.votes[]</c> with voteid, start_time, end_time and the finalists in app_discounts), this account's
-/// votes (<c>user_votes[]</c>), the sale's app id and the nomination badge's tasks (<c>badge_progress.quests[]</c>).</item>
+/// <item>the page's state lists the categories (voteid, start_time, end_time and the finalists in app_discounts),
+/// this account's votes, the sale's app id and the nomination badge's tasks. Up to 2025 that was
+/// <c>#application_config</c>'s <c>data-steam_awards_config</c>; from 2026 it is the React Query cache in
+/// <c>#valve-ssr-data</c>. Both shapes are read.</item>
 /// </list>
 /// Voting is open while start_time &lt;= now &lt; end_time, the same test Steam's own page makes. Nominations come in the
 /// weeks before: open while that year's categories are listed and their voting hasn't started yet.
@@ -52,10 +53,11 @@ public static class SaleEventPages {
 	public static Awards? ParseAwards(string? html) {
 		string? json = DataAttribute(html, "data-steam_awards_config");
 
-		if (string.IsNullOrWhiteSpace(json)) {
-			return null;
-		}
+		return !string.IsNullOrWhiteSpace(json) ? ParseAwardsConfig(json!) : ParseAwardsReact(html);
+	}
 
+	/// <summary>The page state up to 2025, carried in <c>data-steam_awards_config</c>.</summary>
+	private static Awards? ParseAwardsConfig(string json) {
 		try {
 			using JsonDocument doc = JsonDocument.Parse(json);
 			JsonElement root = doc.RootElement;
@@ -64,51 +66,175 @@ public static class SaleEventPages {
 				return null;
 			}
 
-			List<Category> categories = [];
-
-			if (root.TryGetProperty("definitions", out JsonElement defs) && (defs.ValueKind == JsonValueKind.Object)
-				&& defs.TryGetProperty("votes", out JsonElement votes) && (votes.ValueKind == JsonValueKind.Array)) {
-				foreach (JsonElement v in votes.EnumerateArray()) {
-					if (I32(v, "voteid") is not { } id || (id <= 0)) {
-						continue;
-					}
-
-					List<uint> finalists = [];
-
-					if (v.TryGetProperty("app_discounts", out JsonElement apps) && (apps.ValueKind == JsonValueKind.Array)) {
-						foreach (JsonElement a in apps.EnumerateArray()) {
-							if ((Int(a, "appid") is { } app) && (app > 0)) {
-								finalists.Add((uint) app);
-							}
-						}
-					}
-
-					categories.Add(new Category(id, Time(v, "start_time"), Time(v, "end_time"), finalists));
-				}
-			}
-
-			Dictionary<int, uint> mine = [];
-
-			if (root.TryGetProperty("user_votes", out JsonElement uv) && (uv.ValueKind == JsonValueKind.Array)) {
-				foreach (JsonElement v in uv.EnumerateArray()) {
-					if ((I32(v, "voteid") is { } id) && (Int(v, "appid") is { } app) && (app > 0)) {
-						mine[id] = (uint) app;
-					}
-				}
-			}
-
+			List<Category> categories = ReadCategories(root, "definitions", "votes");
+			Dictionary<int, uint> mine = ReadVotes(root, "user_votes");
 			long sale = Int(root, "sale_appid") ?? Int(root, "appid") ?? 0;
-			List<bool> quests = [];
-
-			if (root.TryGetProperty("badge_progress", out JsonElement badge) && (badge.ValueKind == JsonValueKind.Object)
-				&& badge.TryGetProperty("quests", out JsonElement qs) && (qs.ValueKind == JsonValueKind.Array)) {
-				quests.AddRange(qs.EnumerateArray().Select(static q => q.TryGetProperty("completed", out JsonElement c) && (c.ValueKind == JsonValueKind.True)));
-			}
+			List<bool> quests = ReadQuests(root, "badge_progress");
 
 			return new Awards(categories, mine, sale is > 0 and <= uint.MaxValue ? (uint) sale : 0, quests);
 		} catch (JsonException) {
 			return null;
 		}
+	}
+
+	/// <summary>
+	/// The 2026 page dropped <c>data-steam_awards_config</c>: its state now sits in the React Query cache inside the
+	/// <c>#valve-ssr-data</c> script. Read the same categories, votes, sale app id and badge tasks from there.
+	/// </summary>
+	private static Awards? ParseAwardsReact(string? html) {
+		if (string.IsNullOrEmpty(html)) {
+			return null;
+		}
+
+		Match script = Regex.Match(html, "<script\\b[^>]*\\bid=\"valve-ssr-data\"[^>]*>(.*?)</script>",
+			RegexOptions.Singleline | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+		if (!script.Success) {
+			return null;
+		}
+
+		try {
+			using JsonDocument outer = JsonDocument.Parse(script.Groups[1].Value);
+
+			if ((outer.RootElement.ValueKind != JsonValueKind.Object)
+				|| !outer.RootElement.TryGetProperty("renderContext", out JsonElement context) || (context.ValueKind != JsonValueKind.Object)
+				|| !context.TryGetProperty("queryData", out JsonElement cache)) {
+				return null;
+			}
+
+			// The cache is itself JSON, written as a string in the server-rendered page.
+			using JsonDocument? inner = cache.ValueKind == JsonValueKind.String ? JsonDocument.Parse(cache.GetString() ?? "") : null;
+			JsonElement root = inner?.RootElement ?? cache;
+
+			if ((root.ValueKind != JsonValueKind.Object) || !root.TryGetProperty("queries", out JsonElement queries) || (queries.ValueKind != JsonValueKind.Array)) {
+				return null;
+			}
+
+			JsonElement voteDefinitions = default, userNominations = default, badgeProgress = default;
+			uint sale = 0;
+
+			foreach (JsonElement query in queries.EnumerateArray()) {
+				if ((query.ValueKind != JsonValueKind.Object) || !query.TryGetProperty("queryKey", out JsonElement key)
+					|| (key.ValueKind != JsonValueKind.Array) || (key.GetArrayLength() == 0) || (key[0].ValueKind != JsonValueKind.String)) {
+					continue;
+				}
+
+				string name = key[0].GetString() ?? "";
+				JsonElement data = query.TryGetProperty("state", out JsonElement state) && (state.ValueKind == JsonValueKind.Object)
+					&& state.TryGetProperty("data", out JsonElement stateData) ? stateData : default;
+
+				if (name.Contains("GetVoteDefinitions", StringComparison.OrdinalIgnoreCase)) {
+					// Steam passes the sale's app id as the query's second key: the same id the old config called sale_appid.
+					if ((key.GetArrayLength() > 1) && (key[1].ValueKind == JsonValueKind.Number) && key[1].TryGetInt64(out long id)
+						&& (id > 0) && (id <= uint.MaxValue)) {
+						sale = (uint) id;
+					}
+
+					voteDefinitions = data;
+				} else if (name.Contains("GetUserNominations", StringComparison.OrdinalIgnoreCase)) {
+					userNominations = data;
+				} else if (name.Contains("GetCommunityBadgeProgress", StringComparison.OrdinalIgnoreCase)) {
+					badgeProgress = data;
+				}
+			}
+
+			// The old config nested votes under definitions; the React query puts them straight under data.
+			List<Category> categories = voteDefinitions.ValueKind == JsonValueKind.Object
+				? ReadCategories(voteDefinitions, "", "votes") : [];
+
+			Dictionary<int, uint> mine = [];
+			JsonElement noms = userNominations.ValueKind == JsonValueKind.Object && userNominations.TryGetProperty("nominations", out JsonElement nested)
+				? nested : userNominations;
+
+			if (noms.ValueKind == JsonValueKind.Array) {
+				foreach (JsonElement n in noms.EnumerateArray()) {
+					int? category = I32(n, "category_id") ?? I32(n, "voteid");
+
+					if ((category is { } c) && (Int(n, "appid") is { } app) && (app > 0) && (app != SkipApp)) {
+						mine[c] = (uint) app;
+					}
+				}
+			}
+
+			List<bool> quests = [];
+			JsonElement tasks = badgeProgress.ValueKind == JsonValueKind.Object && badgeProgress.TryGetProperty("quests", out JsonElement nestedTasks)
+				? nestedTasks : badgeProgress;
+
+			if (tasks.ValueKind == JsonValueKind.Array) {
+				quests.AddRange(tasks.EnumerateArray().Select(static q =>
+					(q.ValueKind == JsonValueKind.Object) && q.TryGetProperty("completed", out JsonElement c) && (c.ValueKind == JsonValueKind.True)));
+			}
+
+			return new Awards(categories, mine, sale, quests);
+		} catch (JsonException) {
+			return null;
+		}
+	}
+
+	/// <summary>Categories from <c>parent.[group.]votes[]</c>, where an empty group means the array is on the parent itself.</summary>
+	private static List<Category> ReadCategories(JsonElement parent, string group, string arrayName) {
+		List<Category> categories = [];
+		JsonElement source = parent;
+
+		if (!string.IsNullOrEmpty(group)) {
+			if (!parent.TryGetProperty(group, out JsonElement nested) || (nested.ValueKind != JsonValueKind.Object)) {
+				return categories;
+			}
+
+			source = nested;
+		}
+
+		if (!source.TryGetProperty(arrayName, out JsonElement votes) || (votes.ValueKind != JsonValueKind.Array)) {
+			return categories;
+		}
+
+		foreach (JsonElement v in votes.EnumerateArray()) {
+			if (I32(v, "voteid") is not { } id || (id <= 0)) {
+				continue;
+			}
+
+			List<uint> finalists = [];
+
+			if (v.TryGetProperty("app_discounts", out JsonElement apps) && (apps.ValueKind == JsonValueKind.Array)) {
+				foreach (JsonElement a in apps.EnumerateArray()) {
+					if ((Int(a, "appid") is { } app) && (app > 0)) {
+						finalists.Add((uint) app);
+					}
+				}
+			}
+
+			categories.Add(new Category(id, Time(v, "start_time"), Time(v, "end_time"), finalists));
+		}
+
+		return categories;
+	}
+
+	/// <summary>voteid → game from an array of the page's own votes.</summary>
+	private static Dictionary<int, uint> ReadVotes(JsonElement parent, string arrayName) {
+		Dictionary<int, uint> mine = [];
+
+		if (parent.TryGetProperty(arrayName, out JsonElement votes) && (votes.ValueKind == JsonValueKind.Array)) {
+			foreach (JsonElement v in votes.EnumerateArray()) {
+				if ((I32(v, "voteid") is { } id) && (Int(v, "appid") is { } app) && (app > 0)) {
+					mine[id] = (uint) app;
+				}
+			}
+		}
+
+		return mine;
+	}
+
+	/// <summary>The badge's quests, in order, as completed flags.</summary>
+	private static List<bool> ReadQuests(JsonElement parent, string group) {
+		List<bool> quests = [];
+
+		if (parent.TryGetProperty(group, out JsonElement badge) && (badge.ValueKind == JsonValueKind.Object)
+			&& badge.TryGetProperty("quests", out JsonElement tasks) && (tasks.ValueKind == JsonValueKind.Array)) {
+			quests.AddRange(tasks.EnumerateArray().Select(static q =>
+				(q.ValueKind == JsonValueKind.Object) && q.TryGetProperty("completed", out JsonElement c) && (c.ValueKind == JsonValueKind.True)));
+		}
+
+		return quests;
 	}
 
 	/// <summary>Voting is on: the first category's voting has started and not ended - Steam's own test.</summary>
