@@ -454,9 +454,15 @@ if (Environment.GetEnvironmentVariable("NOCAT_BANPAGES") is { Length: > 0 } banP
 		&& GamerFarm.Commands.ParseSwapAssets("<html>", out _, out _) != null
 		&& GamerFarm.Commands.ParseSwapAssets("""{"give":[{"app":753,"id":"1"}]}""", out _, out _) != null
 		&& GamerFarm.Commands.ParseSwapAssets("""{"give":[{"app":753,"context":"6","id":"1"},{"app":753,"context":"6","id":"2"},{"app":753,"context":"6","id":"3"},{"app":753,"context":"6","id":"4"},{"app":753,"context":"6","id":"5"},{"app":753,"context":"6","id":"6"},{"app":753,"context":"6","id":"7"},{"app":753,"context":"6","id":"8"},{"app":753,"context":"6","id":"9"},{"app":753,"context":"6","id":"10"},{"app":753,"context":"6","id":"11"},{"app":753,"context":"6","id":"12"},{"app":753,"context":"6","id":"13"},{"app":753,"context":"6","id":"14"},{"app":753,"context":"6","id":"15"},{"app":753,"context":"6","id":"16"},{"app":753,"context":"6","id":"17"},{"app":753,"context":"6","id":"18"},{"app":753,"context":"6","id":"19"},{"app":753,"context":"6","id":"20"},{"app":753,"context":"6","id":"21"},{"app":753,"context":"6","id":"22"},{"app":753,"context":"6","id":"23"},{"app":753,"context":"6","id":"24"},{"app":753,"context":"6","id":"25"},{"app":753,"context":"6","id":"26"}]}""", out _, out _) != null);
-	Check("sendswap: listed with help and refused from gamer.mom, like the other send commands",
+	Check("sendswap: a swap needs both sides, no duplicate assets, and at most 25 a side",
+		GamerFarm.Commands.ParseSwapAssets("""{"give":[{"app":753,"context":"6","id":"1"}]}""", out _, out _) != null
+		&& GamerFarm.Commands.ParseSwapAssets("""{"give":[{"app":753,"context":"6","id":"1"},{"app":753,"context":"6","id":"1"}],"want":[{"app":753,"context":"6","id":"2"},{"app":753,"context":"6","id":"3"}]}""", out _, out _) != null
+		&& GamerFarm.Commands.ParseSwapAssets("""{"give":[{"app":753,"context":"6","id":"1","foil":true}],"want":[{"app":753,"context":"6","id":"2","foil":true}]}""", out var swapGive, out var swapWant) == null
+		&& swapGive[0].Foil && swapWant[0].Foil);
+	Check("sendswap: listed with help, refused from gamer.mom and Steam chat, like the other send commands",
 		GamerFarm.Commands.All.Any(c => (c.Name == "sendswap") && c.Help.Contains("SteamID64", StringComparison.Ordinal))
-		&& !GamerFarm.Web.FarmWeb.CommandAllowed(null, "sendswap main 76561198000000000 token {}"));
+		&& !GamerFarm.Web.FarmWeb.CommandAllowed(null, "sendswap main 76561198000000000 token {}")
+		&& GamerFarm.Commands.SteamChatRefuses("sendswap"));
 }
 
 // ── reconnects: the wait grows, and stops at five minutes ─────────────────────────────────────────────────

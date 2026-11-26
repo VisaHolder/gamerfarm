@@ -608,9 +608,10 @@ public static partial class Looting {
 
 	/// <summary>
 	/// Send a trade offer to any Steam user with a trade token, using the same guarded path as every other offer.
-	/// Add-ons reach this through the 'sendswap' command, not by calling Steam themselves.
+	/// Internal on purpose: the 'sendswap' command validates the account, token, items and counts before calling it.
+	/// A public wrapper would let any plugin send arbitrary items straight past all of those checks.
 	/// </summary>
-	public static Task<(bool Ok, string Message)> SendSwapAsync(Bot bot, ulong partner, string token, IReadOnlyCollection<Item> giving, IReadOnlyCollection<Item> wanted, CancellationToken ct = default) =>
+	internal static Task<(bool Ok, string Message)> SendSwapAsync(Bot bot, ulong partner, string token, IReadOnlyCollection<Item> giving, IReadOnlyCollection<Item> wanted, CancellationToken ct = default) =>
 		SendOfferAsync(bot, partner, giving, token, ct, wanted);
 
 	private static async Task<(bool Ok, string Message)> SendOfferAsync(Bot bot, ulong master, IReadOnlyCollection<Item> items, string accessToken, CancellationToken ct, IReadOnlyCollection<Item>? wanted = null) {
