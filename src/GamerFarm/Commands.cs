@@ -316,8 +316,8 @@ public static partial class Commands {
 				return SetMasked(line, parts);
 
 			// 'sendswap <account> <steamID64> <token> <json>': the trade token is a credential, never in the log.
-			case "sendswap" when parts.Length > 2:
-				return Slots(line, parts, (_, i) => i == 2 ? "***" : null);
+			case "sendswap" when parts.Length > 3:
+				return Slots(line, parts, (_, i) => i == 3 ? "***" : null);
 
 			default:
 				return (line, []);
@@ -3125,7 +3125,7 @@ public static partial class Commands {
 			return "that isn't a Steam trade token (6-16 letters, digits, - or _)";
 		}
 
-		if (ParseSwapAssets(Tail(line, 3), out List<SwapAsset> give, out List<SwapAsset> want) is { } problem) {
+		if (ParseSwapAssets(Tail(line, 4), out List<SwapAsset> give, out List<SwapAsset> want) is { } problem) {
 			return problem;
 		}
 
@@ -3141,7 +3141,9 @@ public static partial class Commands {
 			return "that's one of your own accounts - use 'send <account> to <account>' instead";
 		}
 
-		HashSet<ulong> busy = await TradeOffers.PromisedAsync(bot).ConfigureAwait(false) ?? [];
+		if (await TradeOffers.PromisedAsync(bot).ConfigureAwait(false) is not { } busy) {
+			return $"{bot.Name}: Steam wouldn't say which items are in a waiting trade - nothing sent";
+		}
 		HashSet<uint> banned = [.. bot.Cfg.InventoryIgnoreGames.Select(static a => (uint) a)];
 		Dictionary<ulong, Looting.Item> ours = [];
 

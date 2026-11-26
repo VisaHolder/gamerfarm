@@ -463,6 +463,14 @@ if (Environment.GetEnvironmentVariable("NOCAT_BANPAGES") is { Length: > 0 } banP
 		GamerFarm.Commands.All.Any(c => (c.Name == "sendswap") && c.Help.Contains("SteamID64", StringComparison.Ordinal))
 		&& !GamerFarm.Web.FarmWeb.CommandAllowed(null, "sendswap main 76561198000000000 token {}")
 		&& GamerFarm.Commands.SteamChatRefuses("sendswap"));
+	string sendswapLine = "sendswap main 76561198000000000 AbCD12 {\"give\":[{\"app\":753,\"context\":\"6\",\"id\":\"1\"}],\"want\":[{\"app\":753,\"context\":\"6\",\"id\":\"2\"}]}";
+	string sendswapLog = GamerFarm.Commands.LineForLog(sendswapLine);
+	Check("sendswap: the trade token is masked in the log, the SteamID64 is not",
+		sendswapLog.Contains("***", StringComparison.Ordinal) && sendswapLog.Contains("AbCD12", StringComparison.Ordinal) == false && sendswapLog.Contains("76561198000000000", StringComparison.Ordinal), sendswapLog);
+	Check("sendswap: a full command line finds the compact JSON argument, not the token",
+		GamerFarm.Commands.ParseSwapAssets(GamerFarm.Commands.Tail(sendswapLine, 4), out var lineGive, out var lineWant) == null
+		&& lineGive.Count == 1 && lineWant.Count == 1
+		&& GamerFarm.Commands.ParseSwapAssets(GamerFarm.Commands.Tail(sendswapLine, 3), out _, out _) != null);
 }
 
 // ── reconnects: the wait grows, and stops at five minutes ─────────────────────────────────────────────────
