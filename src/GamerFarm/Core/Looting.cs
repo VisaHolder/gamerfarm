@@ -606,6 +606,13 @@ public static partial class Looting {
 	/// <summary>Card pairs per offer. Steam copes with a few hundred items, but a smaller offer is easier to confirm and less to lose to one refusal.</summary>
 	private const int SwapChunk = 100;
 
+	/// <summary>
+	/// Send a trade offer to any Steam user with a trade token, using the same guarded path as every other offer.
+	/// Add-ons reach this through the 'sendswap' command, not by calling Steam themselves.
+	/// </summary>
+	public static Task<(bool Ok, string Message)> SendSwapAsync(Bot bot, ulong partner, string token, IReadOnlyCollection<Item> giving, IReadOnlyCollection<Item> wanted, CancellationToken ct = default) =>
+		SendOfferAsync(bot, partner, giving, token, ct, wanted);
+
 	private static async Task<(bool Ok, string Message)> SendOfferAsync(Bot bot, ulong master, IReadOnlyCollection<Item> items, string accessToken, CancellationToken ct, IReadOnlyCollection<Item>? wanted = null) {
 		// Every offer this account makes goes through here - so a scam watch hold stops each one, whoever asked for it,
 		// unless it was you by a command (ScamWatch.HeldBack).
