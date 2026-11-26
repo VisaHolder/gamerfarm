@@ -445,6 +445,34 @@ if (Environment.GetEnvironmentVariable("NOCAT_BANPAGES") is { Length: > 0 } banP
 	List<string> words = [.. GamerFarm.Commands.All.SelectMany(static c => $"{c.Aliases}|{c.HiddenAliases}".Split('|', StringSplitOptions.RemoveEmptyEntries).Prepend(c.Name)).Select(static w => w.ToLowerInvariant())];
 	List<string> twice = [.. words.GroupBy(static w => w).Where(static g => g.Count() > 1).Select(static g => g.Key)];
 	Check("commands: no word reaches two commands", twice.Count == 0, string.Join(", ", twice));
+
+	string? badJson = GamerFarm.Commands.ParseSwapAssets("""{"give":[{"app":753,"context":"6","id":"123"}],"want":[{"app":753,"context":6,"id":456}]}""", out var giveAssets, out var wantAssets);
+	Check("sendswap: assets are read from numbers or strings, on either side",
+		(badJson == null) && (giveAssets.Count == 1) && (giveAssets[0].AssetId == 123) && (wantAssets.Count == 1) && (wantAssets[0].AssetId == 456), badJson ?? "");
+	Check("sendswap: no cards to give, bad JSON, a missing context and too many assets are refused",
+		GamerFarm.Commands.ParseSwapAssets("""{"give":[]}""", out _, out _) != null
+		&& GamerFarm.Commands.ParseSwapAssets("<html>", out _, out _) != null
+		&& GamerFarm.Commands.ParseSwapAssets("""{"give":[{"app":753,"id":"1"}]}""", out _, out _) != null
+		&& GamerFarm.Commands.ParseSwapAssets("""{"give":[{"app":753,"context":"6","id":"1"},{"app":753,"context":"6","id":"2"},{"app":753,"context":"6","id":"3"},{"app":753,"context":"6","id":"4"},{"app":753,"context":"6","id":"5"},{"app":753,"context":"6","id":"6"},{"app":753,"context":"6","id":"7"},{"app":753,"context":"6","id":"8"},{"app":753,"context":"6","id":"9"},{"app":753,"context":"6","id":"10"},{"app":753,"context":"6","id":"11"},{"app":753,"context":"6","id":"12"},{"app":753,"context":"6","id":"13"},{"app":753,"context":"6","id":"14"},{"app":753,"context":"6","id":"15"},{"app":753,"context":"6","id":"16"},{"app":753,"context":"6","id":"17"},{"app":753,"context":"6","id":"18"},{"app":753,"context":"6","id":"19"},{"app":753,"context":"6","id":"20"},{"app":753,"context":"6","id":"21"},{"app":753,"context":"6","id":"22"},{"app":753,"context":"6","id":"23"},{"app":753,"context":"6","id":"24"},{"app":753,"context":"6","id":"25"},{"app":753,"context":"6","id":"26"}]}""", out _, out _) != null);
+	Check("sendswap: a swap needs both sides, no duplicate assets, and at most 25 a side",
+		GamerFarm.Commands.ParseSwapAssets("""{"give":[{"app":753,"context":"6","id":"1"}]}""", out _, out _) != null
+		&& GamerFarm.Commands.ParseSwapAssets("""{"give":[{"app":753,"context":"6","id":"1"},{"app":753,"context":"6","id":"1"}],"want":[{"app":753,"context":"6","id":"2"},{"app":753,"context":"6","id":"3"}]}""", out _, out _) != null
+		&& GamerFarm.Commands.ParseSwapAssets("""{"give":[{"app":753,"context":"6","id":"1","foil":true}],"want":[{"app":753,"context":"6","id":"2","foil":true}]}""", out var swapGive, out var swapWant) == null
+		&& swapGive[0].Foil && swapWant[0].Foil);
+	Check("sendswap: listed with help, refused from gamer.mom and Steam chat, like the other send commands",
+		GamerFarm.Commands.All.Any(c => (c.Name == "sendswap") && c.Help.Contains("SteamID64", StringComparison.Ordinal))
+		&& !GamerFarm.Web.FarmWeb.CommandAllowed(null, "sendswap main 76561198000000000 token {}")
+		&& GamerFarm.Commands.SteamChatRefuses("sendswap"));
+	string sendswapLine = "sendswap main 76561198000000000 AbCD12 {\"give\":[{\"app\":753,\"context\":\"6\",\"id\":\"1\"}],\"want\":[{\"app\":753,\"context\":\"6\",\"id\":\"2\"}]}";
+	string sendswapLog = GamerFarm.Commands.LineForLog(sendswapLine);
+	Check("sendswap: the trade token is masked in the log, the SteamID64 is not",
+		sendswapLog.Contains("***", StringComparison.Ordinal) && sendswapLog.Contains("AbCD12", StringComparison.Ordinal) == false && sendswapLog.Contains("76561198000000000", StringComparison.Ordinal), sendswapLog);
+	Check("sendswap: a full command line finds the compact JSON argument, not the token",
+		GamerFarm.Commands.ParseSwapAssets(GamerFarm.Commands.Tail(sendswapLine, 4), out var lineGive, out var lineWant) == null
+		&& lineGive.Count == 1 && lineWant.Count == 1
+		&& GamerFarm.Commands.ParseSwapAssets(GamerFarm.Commands.Tail(sendswapLine, 3), out _, out _) != null
+		&& File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "GamerFarm", "Commands.cs")).Replace("\r\n", "\n")
+			.Contains("ParseSwapAssets(Tail(line, 4)", StringComparison.Ordinal));
 }
 
 // ── reconnects: the wait grows, and stops at five minutes ─────────────────────────────────────────────────

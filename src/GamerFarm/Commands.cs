@@ -1,5 +1,6 @@
 ﻿using System.Globalization;
 using System.Text;
+using System.Text.Json;
 using GamerFarm.Config;
 using GamerFarm.Core;
 using GamerFarm.Modules;
@@ -91,6 +92,8 @@ public static partial class Commands {
 		new("offers", "[account|all]", GroupTrades, "Live trade offers, straight from Steam: what's waiting to be accepted, what's been sent, and anything stuck on a confirmation or a trade hold."),
 		new("trade", "accept|decline <account> <number|all> | cancel <account> <offer id|all>", GroupTrades, "Answer a trade offer yourself, by the number 'offers' and the announcements give it. Accepting one that sends items out confirms it too when this account's authenticator is in gamer.farm. You asked, so that is the confirmation. 'trade cancel' takes back offers the account sent that haven't gone through, such as one stuck waiting on a confirmation."),
 		new("send", "<account|all> [to <account>] [types]", GroupTrades, "Send an account's tradable items to the account listed under Trades, or 'to' another of your accounts. Types as in the send setting (cards, foils, backgrounds, emoticons, boosters, gems, all); leave them off for what the send setting says, or trading cards when sending 'to' an account.", "", "loot"),
+		new("sendswap", "<account> <steamID64> <token> {\"give\":[{\"app\":753,\"context\":\"6\",\"id\":\"123\"}],\"want\":[...]}", GroupTrades,
+			"Send a one-for-one card swap to a Steam user by SteamID64 and trade token. The JSON names assets to give from this account and to ask for in return. Only this account's own tradable trading cards can be given, at most 25 on a side; anything else is refused. You asked for this offer, so it is confirmed when this account's authenticator is in gamer.farm."),
 		new("swaps", "[account] | preview|on|off|check <account> | sync", GroupTrades, "Card swaps with other gamer.farm users: whether each account swaps, today's swaps, matches waiting and offers out. 'swaps preview <account>' shows how many spare cards it could swap and the limits; 'swaps on <account>' turns it on (the same as the switch in its settings, after its preview); 'swaps off <account>' turns it off, and gamer.mom deletes its SteamID and trade link. 'swaps sync' asks gamer.mom for new matches now. 'swaps check <account>' only tries the account's sign-in through Steam that swaps need, and says whether it works - it sends nothing to gamer.mom and turns nothing on."),
 
 		new("2fa", "[account]", GroupGuard, "Show this account's Steam Guard code, if its authenticator is set up here. Without an account, every account's code.", "guard"),
@@ -311,6 +314,10 @@ public static partial class Commands {
 
 			case "set":
 				return SetMasked(line, parts);
+
+			// 'sendswap <account> <steamID64> <token> <json>': the trade token is a credential, never in the log.
+			case "sendswap" when parts.Length > 3:
+				return Slots(line, parts, (_, i) => i == 3 ? "***" : null);
 
 			default:
 				return (line, []);
@@ -673,7 +680,7 @@ public static partial class Commands {
 	/// </summary>
 	public static bool SteamChatRefuses(string command) =>
 		command is "set" or "anywhere" or "dashboard" or "unlock" or "update" or "import" or "redeem" or "keys" or "answer"
-			or "add" or "reload" or "plugins" or "notify" or "screen" or "match" or "theme" or "mini"
+			or "add" or "reload" or "plugins" or "notify" or "screen" or "match" or "sendswap" or "theme" or "mini"
 			// 1.8.2: another account's settings written over this one's - as 'set' is.
 			or "copy"
 			// Open in Steam signs this PC's Steam client in - it only makes sense at the PC, never from a chat.
@@ -1025,6 +1032,7 @@ public static partial class Commands {
 				"wake" or "wakeup" or "skipsleep" => Wake(mgr, rest),
 				"redeem" => await RedeemAsync(mgr, rest, line).ConfigureAwait(false),
 				"send" or "loot" => await SendAsync(mgr, rest).ConfigureAwait(false),
+				"sendswap" => await SendSwapAsync(mgr, rest, line).ConfigureAwait(false),
 				"2fa" or "guard" => TwoFactor(mgr, AllIsEvery(rest)),
 				"confirmations" => await ConfirmationsAsync(mgr, AllIsEvery(rest)).ConfigureAwait(false),
 				"confirm" => await AnswerConfirmationsAsync(mgr, rest, true).ConfigureAwait(false),
@@ -3028,6 +3036,166 @@ public static partial class Commands {
 	/// see Looting for why. This used to be two commands, 'send' and 'transfer', that did the same thing with a
 	/// different recipient.
 	/// </summary>
+	/// <summary>One Steam asset on one side of a requested trade offer.</summary>
+	internal readonly record struct SwapAsset(uint App, string Context, ulong AssetId, bool Foil = false);
+
+	/// <summary>Read a 'sendswap' request. Null means it parsed; both sides must hold the same number of cards.</summary>
+	internal static string? ParseSwapAssets(string json, out List<SwapAsset> give, out List<SwapAsset> want) {
+		give = [];
+		want = [];
+
+		try {
+			using JsonDocument doc = JsonDocument.Parse(json);
+
+			if (doc.RootElement.ValueKind != JsonValueKind.Object) {
+				return "the request must be a JSON object";
+			}
+
+			foreach ((string name, List<SwapAsset> into) in new[] { ("give", give), ("want", want) }) {
+				if (!doc.RootElement.TryGetProperty(name, out JsonElement list)) {
+					continue;
+				}
+
+				if (list.ValueKind != JsonValueKind.Array) {
+					return $"'{name}' must be a list";
+				}
+
+				foreach (JsonElement item in list.EnumerateArray()) {
+					string context = item.ValueKind == JsonValueKind.Object ? Words(item, "context") : "";
+
+					if (item.ValueKind != JsonValueKind.Object || !Num(item, "app", out ulong app) || (app == 0) || (app > uint.MaxValue)
+						|| !Num(item, "id", out ulong asset) || (asset == 0) || context.Length == 0) {
+						return $"'{name}' has an asset without an app, context and id";
+					}
+
+					bool foil = item.TryGetProperty("foil", out JsonElement isFoil) && (isFoil.ValueKind == JsonValueKind.True);
+					into.Add(new SwapAsset((uint) app, context, asset, foil));
+				}
+			}
+		} catch (JsonException) {
+			return "that isn't valid JSON";
+		}
+
+		if (give.Count == 0) {
+			return "there are no cards to give";
+		}
+
+		if (give.Count != want.Count) {
+			return "a swap needs the same number of cards on both sides";
+		}
+
+		if ((give.Count > 25) || (want.Count > 25)) {
+			return "at most 25 assets on a side";
+		}
+
+		if (give.Select(static a => a.AssetId).Distinct().Count() != give.Count || want.Select(static a => a.AssetId).Distinct().Count() != want.Count) {
+			return "the same asset can't be on a side twice";
+		}
+
+		return null;
+	}
+
+	private static string Words(JsonElement node, string name) =>
+		node.TryGetProperty(name, out JsonElement v) && (v.ValueKind is JsonValueKind.String or JsonValueKind.Number)
+			? (v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : v.GetRawText()) : "";
+
+	private static bool Num(JsonElement node, string name, out ulong value) {
+		value = 0;
+
+		return node.TryGetProperty(name, out JsonElement v) && (v.ValueKind switch {
+			JsonValueKind.Number => v.TryGetUInt64(out value),
+			JsonValueKind.String => ulong.TryParse(v.GetString(), NumberStyles.None, CultureInfo.InvariantCulture, out value),
+			_ => false
+		});
+	}
+
+	/// <summary>A trade offer to someone outside gamer.farm, with only this account's own tradable cards on our side.</summary>
+	private static async Task<string> SendSwapAsync(BotManager mgr, string[] args, string line = "") {
+		const string usage = "sendswap <account> <steamID64> <token> {\"give\":[{\"app\":753,\"context\":\"6\",\"id\":\"123\"}],\"want\":[...]}";
+
+		if (args.Length < 4) {
+			return usage;
+		}
+
+		if (!ulong.TryParse(args[1], NumberStyles.None, CultureInfo.InvariantCulture, out ulong partner) || (partner <= uint.MaxValue)) {
+			return "the partner must be a full SteamID64, not an account id";
+		}
+
+		if (!CardExchange.TokenOk(args[2])) {
+			return "that isn't a Steam trade token (6-16 letters, digits, - or _)";
+		}
+
+		if (ParseSwapAssets(Tail(line, 4), out List<SwapAsset> give, out List<SwapAsset> want) is { } problem) {
+			return problem;
+		}
+
+		if (mgr.Get(args[0]) is not { } bot) {
+			return NoSuchAccount(mgr, args[0]);
+		}
+
+		if (!bot.IsOnline || !bot.Web.Ready) {
+			return $"{bot.Name} isn't logged in";
+		}
+
+		if (SteamNames.IsOwn(partner)) {
+			return "that's one of your own accounts - use 'send <account> to <account>' instead";
+		}
+
+		if (await TradeOffers.PromisedAsync(bot).ConfigureAwait(false) is not { } busy) {
+			return $"{bot.Name}: Steam wouldn't say which items are in a waiting trade - nothing sent";
+		}
+		HashSet<uint> banned = [.. bot.Cfg.InventoryIgnoreGames.Select(static a => (uint) a)];
+		Dictionary<ulong, Looting.Item> ours = [];
+
+		foreach (Looting.Item item in await Looting.InventoryAsync(bot).ConfigureAwait(false)) {
+			bool foil = item.Type.Contains("Foil", StringComparison.OrdinalIgnoreCase);
+
+			if (item.Tradable && (item.App == 753) && !banned.Contains(item.Game)
+				&& item.Type.Contains("Trading Card", StringComparison.OrdinalIgnoreCase)) {
+				ours[item.AssetId] = item with { Type = item.Type, Name = item.Name + (foil ? " (Foil)" : "") };
+			}
+		}
+
+		List<Looting.Item> giving = [];
+
+		foreach (SwapAsset asset in give) {
+			if (!ours.TryGetValue(asset.AssetId, out Looting.Item item)
+				|| !uint.TryParse(asset.Context, NumberStyles.None, CultureInfo.InvariantCulture, out uint context) || (item.Context != context)
+				|| item.Type.Contains("Foil", StringComparison.OrdinalIgnoreCase) != asset.Foil) {
+				return $"asset {asset.AssetId.ToString(CultureInfo.InvariantCulture)} isn't one of {bot.Name}'s tradable trading cards in context {asset.Context}";
+			}
+
+			if (busy.Contains(asset.AssetId)) {
+				return $"asset {asset.AssetId.ToString(CultureInfo.InvariantCulture)} is already on another offer - try again once that's done";
+			}
+
+			giving.Add(item);
+		}
+
+		HashSet<ulong> claimed = bot.ClaimItems(giving.Select(static i => i.AssetId));
+
+		try {
+			if (claimed.Count != giving.Count) {
+				return "some of those cards are already being sent, sold or swapped - try again once that's done";
+			}
+
+			return await SendSwapOfferedAsync(bot, partner, args[2], giving, want).ConfigureAwait(false);
+		} finally {
+			bot.ReleaseItems(claimed);
+		}
+	}
+
+	/// <summary>The checked items go out here; the caller holds the claim until the answer comes back.</summary>
+	private static async Task<string> SendSwapOfferedAsync(Bot bot, ulong partner, string token, IReadOnlyCollection<Looting.Item> giving, IReadOnlyList<SwapAsset> want) {
+		List<Looting.Item> wanted = [.. want.Select(a => new Looting.Item(a.AssetId, 0, 0, 1, a.Foil ? "Foil Trading Card" : "Trading Card", "", 753,
+			uint.TryParse(a.Context, NumberStyles.None, CultureInfo.InvariantCulture, out uint c) ? c : 6, 0))];
+		(bool ok, string message) = await Looting.SendSwapAsync(bot, partner, token, giving, wanted).ConfigureAwait(false);
+
+		return ok
+			? $"{bot.Name}: offered {giving.Count.ToString(CultureInfo.InvariantCulture)} card(s) to {partner.ToString(CultureInfo.InvariantCulture)} - {message}"
+			: $"{bot.Name}: the offer was refused - {message}";
+	}
+
 	private static async Task<string> SendAsync(BotManager mgr, string[] args) {
 		string target = args.FirstOrDefault() ?? "";
 

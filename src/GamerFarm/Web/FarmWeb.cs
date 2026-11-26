@@ -234,7 +234,7 @@ public static class FarmWeb {
 
 			// Trades & items
 			["offers"] = Always,
-			["trade"] = null, ["send"] = null,
+			["trade"] = null, ["send"] = null, ["sendswap"] = null,   // no trade offer from a page served by gamer.mom
 			["swaps"] = static (_, w) => !Has(w, "on"),
 
 			// Steam Guard
