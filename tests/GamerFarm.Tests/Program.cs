@@ -470,7 +470,9 @@ if (Environment.GetEnvironmentVariable("NOCAT_BANPAGES") is { Length: > 0 } banP
 	Check("sendswap: a full command line finds the compact JSON argument, not the token",
 		GamerFarm.Commands.ParseSwapAssets(GamerFarm.Commands.Tail(sendswapLine, 4), out var lineGive, out var lineWant) == null
 		&& lineGive.Count == 1 && lineWant.Count == 1
-		&& GamerFarm.Commands.ParseSwapAssets(GamerFarm.Commands.Tail(sendswapLine, 3), out _, out _) != null);
+		&& GamerFarm.Commands.ParseSwapAssets(GamerFarm.Commands.Tail(sendswapLine, 3), out _, out _) != null
+		&& File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "GamerFarm", "Commands.cs")).Replace("\r\n", "\n")
+			.Contains("ParseSwapAssets(Tail(line, 4)", StringComparison.Ordinal));
 }
 
 // ── reconnects: the wait grows, and stops at five minutes ─────────────────────────────────────────────────
